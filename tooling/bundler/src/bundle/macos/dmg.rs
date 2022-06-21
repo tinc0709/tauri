@@ -122,13 +122,23 @@ pub fn bundle_project(settings: &Settings, bundles: &[Bundle]) -> crate::Result<
   //   &bundle_file_name,
   // ];
 
+  // Currently copying over, but it doesn't seem to be picking it up
   let icns_icon_path =
     create_icns_file(&temp_dir, settings)?.map(|path| path.to_string_lossy().to_string());
   if let Some(icon) = &icns_icon_path {
-    // Currently not copying it over
-    fs::copy(icon, temp_dir.join(".VolumeIcon.icns"))
-      .context("Failed to create the DMG volume icon")?;
+    fs::rename(icon, temp_dir.join(".VolumeIcon.icns"))
+      .context("Failed to set the DMG volume icon")?;
   }
+
+  // Create Application shortcut
+  Command::new("ln")
+    .current_dir(temp_dir.clone())
+    .arg("-s")
+    .arg("/Applications")
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .context("Error creating Application shortcut for macOS")?;
 
   #[allow(unused_assignments)]
   let mut license_path_ref = "".to_string();
