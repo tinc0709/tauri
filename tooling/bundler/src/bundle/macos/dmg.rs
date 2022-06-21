@@ -126,7 +126,7 @@ pub fn bundle_project(settings: &Settings, bundles: &[Bundle]) -> crate::Result<
     args.push(&license_path_ref);
   }
 
-  // Issue #592 - Building MacOS dmg files on CI
+  // Issue #592 - Building macOS dmg files on CI
   // https://github.com/tauri-apps/tauri/issues/592
   if let Some(value) = env::var_os("CI") {
     if value == "true" {
@@ -134,15 +134,30 @@ pub fn bundle_project(settings: &Settings, bundles: &[Bundle]) -> crate::Result<
     }
   }
 
-  info!(action = "Running"; "bundle_dmg.sh");
+  println!("{}, {}", dmg_name, bundle_file_name);
+
+  Command::new("hdiutil")
+    .current_dir(bundle_dir.clone())
+    .arg("create")
+    .arg(dmg_name.as_str())
+    .arg("-volname")
+    .arg(bundle_file_name.as_str())
+    .arg("-fs")
+    .arg("HFS+")
+    .arg("-srcfolder")
+    .arg(bundle_file_name.as_str())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .context("Error creating DMG for macOS")?;
 
   // execute the bundle script
-  Command::new(&bundle_script_path)
-    .current_dir(bundle_dir.clone())
-    .args(args)
-    .args(vec![dmg_name.as_str(), bundle_file_name.as_str()])
-    .output_ok()
-    .context("error running bundle_dmg.sh")?;
+  // Command::new(&bundle_script_path)
+  //   .current_dir(bundle_dir.clone())
+  //   .args(args)
+  //   .args(vec![dmg_name.as_str(), bundle_file_name.as_str()])
+  //   .output_ok()
+  //   .context("error running bundle_dmg.sh")?;
 
   fs::rename(bundle_dir.join(dmg_name), dmg_path.clone())?;
 
