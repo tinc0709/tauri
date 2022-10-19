@@ -1,4 +1,4 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2022 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
@@ -8,6 +8,8 @@ pub(crate) mod menu;
 
 pub use menu::{MenuEvent, MenuHandle};
 
+#[cfg(target_os = "macos")]
+use crate::TitleBarStyle;
 use crate::{
   app::AppHandle,
   command::{CommandArg, CommandItem},
@@ -44,6 +46,8 @@ use std::{
   path::PathBuf,
   sync::Arc,
 };
+
+pub(crate) type WebResourceRequestHandler = dyn Fn(&HttpRequest, &mut HttpResponse) + Send + Sync;
 
 #[derive(Clone, Serialize)]
 struct WindowCreatedEvent {
@@ -103,7 +107,7 @@ pub struct WindowBuilder<'a, R: Runtime> {
   label: String,
   pub(crate) window_builder: <R::Dispatcher as Dispatch<EventLoopMessage>>::WindowBuilder,
   pub(crate) webview_attributes: WebviewAttributes,
-  web_resource_request_handler: Option<Box<dyn Fn(&HttpRequest, &mut HttpResponse) + Send + Sync>>,
+  web_resource_request_handler: Option<Box<WebResourceRequestHandler>>,
 }
 
 impl<'a, R: Runtime> fmt::Debug for WindowBuilder<'a, R> {
@@ -324,10 +328,21 @@ impl<'a, R: Runtime> WindowBuilder<'a, R> {
     self
   }
 
-  /// Whether the window will be initially hidden or focused.
+  /// Sets the window to be initially focused.
   #[must_use]
+  #[deprecated(
+    since = "1.2.0",
+    note = "The window is automatically focused by default. This function Will be removed in 2.0.0. Use `focused` instead."
+  )]
   pub fn focus(mut self) -> Self {
-    self.window_builder = self.window_builder.focus();
+    self.window_builder = self.window_builder.focused(true);
+    self
+  }
+
+  /// Whether the window will be initially focused or not.
+  #[must_use]
+  pub fn focused(mut self, focused: bool) -> Self {
+    self.window_builder = self.window_builder.focused(focused);
     self
   }
 
@@ -350,14 +365,13 @@ impl<'a, R: Runtime> WindowBuilder<'a, R> {
   /// ## Platform-specific
   ///
   /// - **macOS**: Only supported on macOS 10.14+.
-  /// - **Linux**: Not implemented, the value is ignored.
   #[must_use]
   pub fn theme(mut self, theme: Option<Theme>) -> Self {
     self.window_builder = self.window_builder.theme(theme);
     self
   }
 
-  /// Whether the the window should be transparent. If this is true, writing colors
+  /// Whether the window should be transparent. If this is true, writing colors
   /// with alpha values different than `1.0` will produce a transparent window.
   #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
   #[cfg_attr(
@@ -432,15 +446,66 @@ impl<'a, R: Runtime> WindowBuilder<'a, R> {
     self
   }
 
+  /// Sets the [`TitleBarStyle`].
+  #[cfg(target_os = "macos")]
+  #[must_use]
+  pub fn title_bar_style(mut self, style: TitleBarStyle) -> Self {
+    self.window_builder = self.window_builder.title_bar_style(style);
+    self
+  }
+
+  /// Hide the window title.
+  #[cfg(target_os = "macos")]
+  #[must_use]
+  pub fn hidden_title(mut self, hidden: bool) -> Self {
+    self.window_builder = self.window_builder.hidden_title(hidden);
+    self
+  }
+
   // ------------------------------------------- Webview attributes -------------------------------------------
 
-  /// Sets the init script.
+  /// Adds the provided JavaScript to a list of scripts that should be run after the global object has been created,
+  /// but before the HTML document has been parsed and before any other script included by the HTML document is run.
+  ///
+  /// Since it runs on all top-level document and child frame page navigations,
+  /// it's recommended to check the `window.location` to guard your script from running on unexpected origins.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use tauri::{WindowBuilder, Runtime};
+  ///
+  /// const INIT_SCRIPT: &str = r#"
+  ///   if (window.location.origin === 'https://tauri.app') {
+  ///     console.log("hello world from js init script");
+  ///
+  ///     window.__MY_CUSTOM_PROPERTY__ = { foo: 'bar' };
+  ///   }
+  /// "#;
+  ///
+  /// fn main() {
+  ///   tauri::Builder::default()
+  ///     .setup(|app| {
+  ///       let window = tauri::WindowBuilder::new(app, "label", tauri::WindowUrl::App("index.html".into()))
+  ///         .initialization_script(INIT_SCRIPT)
+  ///         .build()?;
+  ///       Ok(())
+  ///     });
+  /// }
+  /// ```
   #[must_use]
   pub fn initialization_script(mut self, script: &str) -> Self {
     self
       .webview_attributes
       .initialization_scripts
       .push(script.to_string());
+    self
+  }
+
+  /// Set the user agent for the webview
+  #[must_use]
+  pub fn user_agent(mut self, user_agent: &str) -> Self {
+    self.webview_attributes.user_agent = Some(user_agent.to_string());
     self
   }
 
@@ -470,6 +535,13 @@ impl<'a, R: Runtime> WindowBuilder<'a, R> {
     self.webview_attributes.clipboard = true;
     self
   }
+
+  /// Sets whether clicking an inactive window also clicks through to the webview.
+  #[must_use]
+  pub fn accept_first_mouse(mut self, accept: bool) -> Self {
+    self.webview_attributes.accept_first_mouse = accept;
+    self
+  }
 }
 
 // TODO: expand these docs since this is a pretty important type
@@ -487,23 +559,9 @@ pub struct Window<R: Runtime> {
   pub(crate) app_handle: AppHandle<R>,
 }
 
-#[cfg(any(windows, target_os = "macos"))]
-#[cfg_attr(doc_cfg, doc(cfg(any(windows, target_os = "macos"))))]
 unsafe impl<R: Runtime> raw_window_handle::HasRawWindowHandle for Window<R> {
-  #[cfg(windows)]
   fn raw_window_handle(&self) -> raw_window_handle::RawWindowHandle {
-    let mut handle = raw_window_handle::Win32Handle::empty();
-    handle.hwnd = self.hwnd().expect("failed to get window `hwnd`").0 as *mut _;
-    raw_window_handle::RawWindowHandle::Win32(handle)
-  }
-
-  #[cfg(target_os = "macos")]
-  fn raw_window_handle(&self) -> raw_window_handle::RawWindowHandle {
-    let mut handle = raw_window_handle::AppKitHandle::empty();
-    handle.ns_window = self
-      .ns_window()
-      .expect("failed to get window's `ns_window`");
-    raw_window_handle::RawWindowHandle::AppKit(handle)
+    self.window.dispatcher.raw_window_handle().unwrap()
   }
 }
 
@@ -532,7 +590,24 @@ impl<R: Runtime> PartialEq for Window<R> {
   }
 }
 
-impl<R: Runtime> Manager<R> for Window<R> {}
+impl<R: Runtime> Manager<R> for Window<R> {
+  fn emit_to<S: Serialize + Clone>(
+    &self,
+    label: &str,
+    event: &str,
+    payload: S,
+  ) -> crate::Result<()> {
+    self
+      .manager()
+      .emit_filter(event, Some(self.label()), payload, |w| label == w.label())
+  }
+
+  fn emit_all<S: Serialize + Clone>(&self, event: &str, payload: S) -> crate::Result<()> {
+    self
+      .manager()
+      .emit_filter(event, Some(self.label()), payload, |_| true)
+  }
+}
 impl<R: Runtime> ManagerBase<R> for Window<R> {
   fn manager(&self) -> &WindowManager<R> {
     &self.manager
@@ -555,11 +630,11 @@ impl<'de, R: Runtime> CommandArg<'de, R> for Window<R> {
 }
 
 /// The platform webview handle. Accessed with [`Window#method.with_webview`];
-#[cfg(feature = "wry")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "wry")))]
+#[cfg(all(desktop, feature = "wry"))]
+#[cfg_attr(doc_cfg, doc(cfg(all(desktop, feature = "wry"))))]
 pub struct PlatformWebview(tauri_runtime_wry::Webview);
 
-#[cfg(feature = "wry")]
+#[cfg(all(desktop, feature = "wry"))]
 impl PlatformWebview {
   /// Returns [`webkit2gtk::WebView`] handle.
   #[cfg(any(
@@ -650,7 +725,7 @@ impl Window<crate::Wry> {
   ///
   ///         #[cfg(windows)]
   ///         unsafe {
-  ///           // see https://docs.rs/webview2-com/latest/webview2_com/Microsoft/Web/WebView2/Win32/struct.ICoreWebView2Controller.html
+  ///           // see https://docs.rs/webview2-com/0.17.0/webview2_com/Microsoft/Web/WebView2/Win32/struct.ICoreWebView2Controller.html
   ///           webview.controller().SetZoomFactor(4.).unwrap();
   ///         }
   ///
@@ -666,7 +741,8 @@ impl Window<crate::Wry> {
   ///   });
   /// }
   /// ```
-  #[cfg_attr(doc_cfg, doc(cfg(eature = "wry")))]
+  #[cfg(desktop)]
+  #[cfg_attr(doc_cfg, doc(cfg(all(feature = "wry", desktop))))]
   pub fn with_webview<F: FnOnce(PlatformWebview) + Send + 'static>(
     &self,
     f: F,
@@ -740,14 +816,13 @@ impl<R: Runtime> Window<R> {
   pub fn on_menu_event<F: Fn(MenuEvent) + Send + 'static>(&self, f: F) -> uuid::Uuid {
     let menu_ids = self.window.menu_ids.clone();
     self.window.dispatcher.on_menu_event(move |event| {
-      f(MenuEvent {
-        menu_item_id: menu_ids
-          .lock()
-          .unwrap()
-          .get(&event.menu_item_id)
-          .unwrap()
-          .clone(),
-      })
+      let id = menu_ids
+        .lock()
+        .unwrap()
+        .get(&event.menu_item_id)
+        .unwrap()
+        .clone();
+      f(MenuEvent { menu_item_id: id })
     })
   }
 }
@@ -811,7 +886,7 @@ impl<R: Runtime> Window<R> {
     self.window.dispatcher.is_resizable().map_err(Into::into)
   }
 
-  /// Gets the window's current vibility state.
+  /// Gets the window's current visibility state.
   pub fn is_visible(&self) -> crate::Result<bool> {
     self.window.dispatcher.is_visible().map_err(Into::into)
   }
@@ -853,16 +928,38 @@ impl<R: Runtime> Window<R> {
   /// Returns the native handle that is used by this window.
   #[cfg(target_os = "macos")]
   pub fn ns_window(&self) -> crate::Result<*mut std::ffi::c_void> {
-    self.window.dispatcher.ns_window().map_err(Into::into)
+    self
+      .window
+      .dispatcher
+      .raw_window_handle()
+      .map_err(Into::into)
+      .and_then(|handle| {
+        if let raw_window_handle::RawWindowHandle::AppKit(h) = handle {
+          Ok(h.ns_window)
+        } else {
+          Err(crate::Error::InvalidWindowHandle)
+        }
+      })
   }
 
   /// Returns the native handle that is used by this window.
   #[cfg(windows)]
   pub fn hwnd(&self) -> crate::Result<HWND> {
-    self.window.dispatcher.hwnd().map_err(Into::into)
+    self
+      .window
+      .dispatcher
+      .raw_window_handle()
+      .map_err(Into::into)
+      .and_then(|handle| {
+        if let raw_window_handle::RawWindowHandle::Win32(h) = handle {
+          Ok(HWND(h.hwnd as _))
+        } else {
+          Err(crate::Error::InvalidWindowHandle)
+        }
+      })
   }
 
-  /// Returns the `ApplicatonWindow` from gtk crate that is used by this window.
+  /// Returns the `ApplicationWindow` from gtk crate that is used by this window.
   ///
   /// Note that this can only be used on the main thread.
   #[cfg(any(
@@ -881,7 +978,6 @@ impl<R: Runtime> Window<R> {
   /// ## Platform-specific
   ///
   /// - **macOS**: Only supported on macOS 10.14+.
-  /// - **Linux**: Not implemented, always return [`Theme::Light`].
   pub fn theme(&self) -> crate::Result<Theme> {
     self.window.dispatcher.theme().map_err(Into::into)
   }
@@ -1122,6 +1218,15 @@ impl<R: Runtime> Window<R> {
       .map_err(Into::into)
   }
 
+  /// Ignores the window cursor events.
+  pub fn set_ignore_cursor_events(&self, ignore: bool) -> crate::Result<()> {
+    self
+      .window
+      .dispatcher
+      .set_ignore_cursor_events(ignore)
+      .map_err(Into::into)
+  }
+
   /// Starts dragging the window.
   pub fn start_dragging(&self) -> crate::Result<()> {
     self.window.dispatcher.start_dragging().map_err(Into::into)
@@ -1222,8 +1327,8 @@ impl<R: Runtime> Window<R> {
   ///
   /// ## Platform-specific
   ///
-  /// - **macOS:** This is a private API on macOS,
-  /// so you cannot use this if your application will be published on the App Store.
+  /// - **macOS:** Only supported on macOS 10.15+.
+  /// This is a private API on macOS, so you cannot use this if your application will be published on the App Store.
   ///
   /// # Examples
   ///
@@ -1247,8 +1352,8 @@ impl<R: Runtime> Window<R> {
   ///
   /// ## Platform-specific
   ///
-  /// - **macOS:** This is a private API on macOS,
-  /// so you cannot use this if your application will be published on the App Store.
+  /// - **macOS:** Only supported on macOS 10.15+.
+  /// This is a private API on macOS, so you cannot use this if your application will be published on the App Store.
   /// - **Windows:** Unsupported.
   ///
   /// # Examples
@@ -1280,8 +1385,8 @@ impl<R: Runtime> Window<R> {
   ///
   /// ## Platform-specific
   ///
-  /// - **macOS:** This is a private API on macOS,
-  /// so you cannot use this if your application will be published on the App Store.
+  /// - **macOS:** Only supported on macOS 10.15+.
+  /// This is a private API on macOS, so you cannot use this if your application will be published on the App Store.
   /// - **Windows:** Unsupported.
   ///
   /// # Examples

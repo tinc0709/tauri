@@ -12,7 +12,7 @@ let binName
 
 // Even if started by a package manager, the binary will be NodeJS.
 // Some distribution still use "nodejs" as the binary name.
-if (binStem === 'node' || binStem === 'nodejs') {
+if (binStem.match(/(nodejs|node)([1-9]*)*$/g)) {
   const managerStem = process.env.npm_execpath
     ? path.parse(process.env.npm_execpath).name.toLowerCase()
     : null
@@ -44,6 +44,6 @@ if (binStem === 'node' || binStem === 'nodejs') {
 }
 
 cli.run(arguments, binName).catch((err) => {
-  console.log(`Error running CLI: ${err.message}`)
+  cli.logError(err.message)
   process.exit(1)
 })
